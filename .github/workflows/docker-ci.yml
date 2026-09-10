@@ -1,0 +1,74 @@
+name: Docker CI - build, deploy, healthcheck, panne/reprise
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  docker-proof:
+    name: Preuve de déploiement Docker (build + orchestration + résilience)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Générer les secrets de test (CI uniquement, jamais commités)
+        run: |
+          echo "DB_PASSWORD=ci_test_password_$(openssl rand -hex 4)" >> .env
+          echo "DB_ROOT_PASSWORD=ci_test_root_$(openssl rand -hex 4)" >> .env
+
+      - name: Build de l'image (preuve de maîtrise Docker)
+        run: docker compose build
+
+      - name: Démarrage de l'orchestration complète (app + BDD)
+        run: docker compose up -d
+
+      - name: Attente que les deux services soient "healthy"
+        run: |
+          for i in $(seq 1 30); do
+            STATUS_APP=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q app) 2>/dev/null || echo "starting")
+            STATUS_DB=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q db) 2>/dev/null || echo "starting")
+            echo "app=$STATUS_APP db=$STATUS_DB"
+            if [ "$STATUS_APP" = "healthy" ] && [ "$STATUS_DB" = "healthy" ]; then
+              echo "Les deux services sont sains."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::Timeout en attendant que les services soient healthy"
+          docker compose logs
+          exit 1
+
+      - name: Preuve fonctionnelle - ajout d'une note via HTTP
+        run: |
+          curl -fsS -X POST http://localhost:8088/ -d "action=add&title=Preuve%20CI&content=Ajoutee%20automatiquement%20par%20le%20pipeline"
+          curl -fsS http://localhost:8088/health.php | tee /dev/stderr | grep -q '"status":"ok"'
+
+      - name: Simulation de panne du service applicatif
+        run: |
+          echo "Etat avant panne :"
+          docker compose ps
+          docker kill $(docker compose ps -q app)
+          sleep 2
+          echo "Conteneur app tué volontairement."
+
+      - name: Preuve de reprise automatique (politique restart:unless-stopped)
+        run: |
+          for i in $(seq 1 30); do
+            STATUS=$(docker inspect --format='{{.State.Status}}/{{.State.Health.Status}}' $(docker compose ps -q app) 2>/dev/null || echo "gone")
+            echo "app=$STATUS"
+            if echo "$STATUS" | grep -q "running/healthy"; then
+              echo "Le conteneur a redémarré tout seul et est de nouveau sain."
+              docker compose ps
+              curl -fsS http://localhost:8088/health.php
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::Le conteneur ne s'est pas relevé automatiquement"
+          docker compose logs app
+          exit 1
+
+      - name: Nettoyage
+        if: always()
+        run: docker compose down -v
