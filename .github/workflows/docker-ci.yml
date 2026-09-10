@@ -1,4 +1,4 @@
-name: Docker CI - build, deploy, healthcheck, panne/reprise
+name: Docker CI - build, deploy, healthcheck, scaling, panne/reprise
 
 on:
   push:
@@ -8,7 +8,7 @@ jobs:
   docker-proof:
     name: Preuve de déploiement Docker (build + orchestration + résilience)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
 
@@ -41,8 +41,37 @@ jobs:
 
       - name: Preuve fonctionnelle - ajout d'une note via HTTP
         run: |
-          curl -fsS -X POST http://localhost:8088/ -d "action=add&title=Preuve%20CI&content=Ajoutee%20automatiquement%20par%20le%20pipeline"
-          curl -fsS http://localhost:8088/health.php | tee /dev/stderr | grep -q '"status":"ok"'
+          # Le port hôte n'est plus fixe (voir docker-compose.yml, nécessaire
+          # pour pouvoir scaler) : on le résout dynamiquement à chaque fois.
+          PORT=$(docker compose port app 8080 | cut -d: -f2)
+          echo "APP_PORT=$PORT" >> "$GITHUB_ENV"
+          echo "Port résolu : $PORT"
+          curl -fsS -X POST "http://localhost:$PORT/" -d "action=add&title=Preuve%20CI&content=Ajoutee%20automatiquement%20par%20le%20pipeline"
+          curl -fsS "http://localhost:$PORT/health.php" | tee /dev/stderr | grep -q '"status":"ok"'
+
+      - name: Mise à l'échelle du service applicatif (scaling)
+        run: |
+          echo "--- Avant mise à l'échelle ---"
+          docker compose ps app
+          docker compose up -d --scale app=3 --no-recreate
+          echo "--- Attente que les 3 instances soient healthy ---"
+          for i in $(seq 1 30); do
+            HEALTHY=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -a -q app) 2>/dev/null | grep -c healthy || true)
+            RUNNING=$(docker compose ps -a -q app | wc -l)
+            echo "instances=$RUNNING healthy=$HEALTHY"
+            if [ "$RUNNING" -eq 3 ] && [ "$HEALTHY" -eq 3 ]; then
+              echo "Les 3 instances sont démarrées et saines."
+              break
+            fi
+            sleep 3
+          done
+          echo "--- Tableau de bord de supervision pendant la mise à l'échelle (docker compose ps + docker stats) ---"
+          docker compose ps app
+          docker stats --no-stream $(docker compose ps -a -q app)
+          echo "--- Retour à 1 instance (pour la suite du test de panne/reprise) ---"
+          docker compose up -d --scale app=1 --no-recreate
+          sleep 2
+          docker compose ps app
 
       - name: Simulation de panne du service applicatif
         run: |
@@ -72,11 +101,13 @@ jobs:
           # endpoint HTTP de l'appli plutôt que le texte d'état interne de
           # Docker (qui peut rester "unhealthy" un instant après que le
           # service réponde déjà normalement - constaté sur ce projet).
+          PORT=$(docker compose port app 8080 | cut -d: -f2)
+          echo "Port résolu après reprise : $PORT"
           for i in $(seq 1 40); do
-            if curl -fsS -m 2 http://localhost:8088/health.php 2>/dev/null | grep -q '"status":"ok"'; then
+            if curl -fsS -m 2 "http://localhost:$PORT/health.php" 2>/dev/null | grep -q '"status":"ok"'; then
               echo "Le service a répondu de nouveau après $((i*3))s : redémarrage automatique confirmé."
               docker compose ps
-              curl -fsS http://localhost:8088/health.php
+              curl -fsS "http://localhost:$PORT/health.php"
               exit 0
             fi
             echo "Tentative $i : pas encore de réponse HTTP saine."

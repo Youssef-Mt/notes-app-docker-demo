@@ -2,8 +2,12 @@ services:
   app:
     build: .
     image: notes-app:latest
+    # Port hôte non fixé (juste "8080", pas "8088:8080") : c'est
+    # indispensable pour pouvoir scaler ce service à plusieurs instances
+    # (--scale app=3) sans conflit de port ; Docker assigne un port hôte
+    # libre à chaque instance.
     ports:
-      - "8088:8080"
+      - "8080"
     environment:
       DB_HOST: db
       DB_PORT: "3306"
