@@ -5,6 +5,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  secrets-scan:
+    name: Vérification d'absence de secret dans l'historique (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   docker-proof:
     name: Preuve de déploiement Docker (build + orchestration + résilience)
     runs-on: ubuntu-latest
