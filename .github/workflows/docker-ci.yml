@@ -26,8 +26,8 @@ jobs:
       - name: Attente que les deux services soient "healthy"
         run: |
           for i in $(seq 1 30); do
-            STATUS_APP=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q app) 2>/dev/null || echo "starting")
-            STATUS_DB=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q db) 2>/dev/null || echo "starting")
+            STATUS_APP=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -a -q app) 2>/dev/null || echo "starting")
+            STATUS_DB=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -a -q db) 2>/dev/null || echo "starting")
             echo "app=$STATUS_APP db=$STATUS_DB"
             if [ "$STATUS_APP" = "healthy" ] && [ "$STATUS_DB" = "healthy" ]; then
               echo "Les deux services sont sains."
@@ -48,20 +48,28 @@ jobs:
         run: |
           echo "Etat avant panne :"
           docker compose ps
-          docker kill $(docker compose ps -q app)
+          docker kill $(docker compose ps -a -q app)
           sleep 2
           echo "Conteneur app tué volontairement."
 
       - name: Preuve de reprise automatique (politique restart:unless-stopped)
         run: |
-          for i in $(seq 1 30); do
-            STATUS=$(docker inspect --format='{{.State.Status}}/{{.State.Health.Status}}' $(docker compose ps -q app) 2>/dev/null || echo "gone")
-            echo "app=$STATUS"
-            if echo "$STATUS" | grep -q "running/healthy"; then
-              echo "Le conteneur a redémarré tout seul et est de nouveau sain."
-              docker compose ps
-              curl -fsS http://localhost:8088/health.php
-              exit 0
+          for i in $(seq 1 40); do
+            # -a est indispensable ici : pendant le redémarrage, le conteneur
+            # n'est pas toujours listé comme "running", et "docker compose ps -q"
+            # (sans -a) renvoie alors une chaîne vide -> faux "disparu".
+            CID=$(docker compose ps -a -q app 2>/dev/null)
+            if [ -z "$CID" ]; then
+              echo "app=gone (aucun conteneur trouvé, même avec -a)"
+            else
+              STATUS=$(docker inspect --format='{{.State.Status}}/{{.State.Health.Status}}' "$CID" 2>/dev/null || echo "inspect-error")
+              echo "app=$STATUS"
+              if echo "$STATUS" | grep -q "running/healthy"; then
+                echo "Le conteneur a redémarré tout seul et est de nouveau sain."
+                docker compose ps
+                curl -fsS http://localhost:8088/health.php
+                exit 0
+              fi
             fi
             sleep 3
           done
