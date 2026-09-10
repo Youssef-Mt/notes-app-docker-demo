@@ -48,9 +48,23 @@ jobs:
         run: |
           echo "Etat avant panne :"
           docker compose ps
-          docker kill $(docker compose ps -a -q app)
+          # Important : "docker kill" sur le conteneur est traité par Docker
+          # comme un arrêt VOLONTAIRE de l'opérateur - la politique
+          # "unless-stopped" ne redémarre justement PAS dans ce cas (c'est
+          # voulu : sinon impossible d'arrêter proprement un service).
+          # Pour simuler une vraie panne (crash), on tue le processus
+          # principal DEPUIS L'INTÉRIEUR du conteneur : Docker voit alors
+          # une sortie inattendue du PID 1 et applique la politique de
+          # redémarrage, comme pour un vrai crash applicatif.
+          # "kill" via sh -c : c'est un builtin du shell, ça marche même si
+          # le binaire /bin/kill autonome n'est pas installé dans l'image.
+          # "|| true" : la connexion exec meurt en même temps que le PID 1
+          # tué, docker compose exec peut donc remonter une erreur de
+          # transport alors que l'action a bien eu lieu - attendu, non
+          # bloquant.
+          docker compose exec -T app sh -c 'kill -9 1' || true
           sleep 2
-          echo "Conteneur app tué volontairement."
+          echo "Processus principal tué depuis l'intérieur du conteneur (simulation de crash réel)."
 
       - name: Preuve de reprise automatique (politique restart:unless-stopped)
         run: |
