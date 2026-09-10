@@ -1,0 +1,61 @@
+services:
+  app:
+    build: .
+    image: notes-app:latest
+    ports:
+      - "8088:8080"
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: notes
+      DB_USER: notes_app
+      DB_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    # Politique de redémarrage : le conteneur applicatif redémarre tout
+    # seul en cas de crash, sauf si on l'arrête nous-même volontairement.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8080/health.php') === false ? 1 : 0);"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    networks:
+      - notes-net
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: notes
+      MYSQL_USER: notes_app
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - notes_db_data:/var/lib/mysql
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    networks:
+      - notes-net
+
+networks:
+  notes-net:
+
+volumes:
+  notes_db_data:
